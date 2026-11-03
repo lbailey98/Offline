@@ -371,7 +371,8 @@ namespace mu2e {
     // Define variables that couldn't be constructed in the class constructor
     const CLHEP::Hep3Vector holeHemisphereCenter(0.0, 0.0, crystalHoleZStart); // Crystal hole position in local crystal co-ordinates
 
-    hitPosition = step.position();
+    // The post-step point is where a discrete interaction, e.g. photoabsorption, deposits its energy
+    hitPosition = step.postPosition();
     // Only take the StepPoinMCs in the HPGe detector. STMDet is both sensitive volume of both the HPGe and LaBr.
     if (hitPosition.x() > -3904)
       return;
@@ -430,7 +431,7 @@ namespace mu2e {
     };
 
     if (holeTravelDistance < 0 || electronTravelDistance < 0)
-      throw cet::exception("LogicError") << "Electron (" << electronTravelDistance << ") and hole (" << holeTravelDistance << ") travelling distances should both be positve.\nPosition found at " << step.position() << "(" << hitPosition << ")\n";
+      throw cet::exception("LogicError") << "Electron (" << electronTravelDistance << ") and hole (" << holeTravelDistance << ") travelling distances should both be positve.\nPosition found at " << step.postPosition() << "(" << hitPosition << ")\n";
 
     // Calculate the drift times
     electronTravelTime = electronTravelDistance / electronDriftVelocity;
