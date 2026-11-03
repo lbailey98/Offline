@@ -40,6 +40,7 @@ cet_build_plugin(HPGeWaveformsFromStepPointMCs art::module
       Offline::Mu2eUtilities
       Offline::ProditionsService
       Offline::RecoDataProducts
+      Offline::SeedService
       Offline::STMConditions
       Offline::GlobalConstantsService
 )
