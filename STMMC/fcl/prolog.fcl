@@ -37,7 +37,7 @@ ComponentPositions : { # In beam order
         y : 0.0
         z : 40380.45
     }
-    HPGeCrystalEndcapCentre : { # Not referenced by any fcl. Center of the HPGe crystal's
+    HPGeCrystalEndcapCentre : { # crystalFrontCentre of HPGeWaveformsFromStepPointMCs. Center of the HPGe crystal's
                                 # front face, 5.53 mm (window + air + capsule window) along
                                 # the 45-degree detector axis from the window, which sits at
                                 # x = beam - 40.64 + offset_HPGe (-10), z = 40325.3 + 327.4

@@ -30,6 +30,7 @@
 #include "canvas/Utilities/InputTag.h"
 #include "fhiclcpp/types/Atom.h"
 #include "fhiclcpp/types/OptionalAtom.h"
+#include "fhiclcpp/types/Table.h"
 
 // message handling
 #include "messagefacility/MessageLogger/MessageLogger.h"
@@ -52,10 +53,16 @@ namespace mu2e {
   public:
     using Name=fhicl::Name;
     using Comment=fhicl::Comment;
+    struct Position {
+      fhicl::Atom<double> x{ Name("x"), Comment("x [mm]")};
+      fhicl::Atom<double> y{ Name("y"), Comment("y [mm]")};
+      fhicl::Atom<double> z{ Name("z"), Comment("z [mm]")};
+    };
     struct Config {
       fhicl::Atom<art::InputTag> StepPointMCsTagEle{ Name("StepPointMCsTagEle"), Comment("InputTag for StepPointMCs derived from EleBeamCat")};
       fhicl::Atom<art::InputTag> StepPointMCsTagMu{ Name("StepPointMCsTagMu"), Comment("InputTag for StepPointMCs derived from MuBeamCat")};
       fhicl::Atom<art::InputTag> StepPointMCsTag1809{ Name("StepPointMCsTag1809"), Comment("InputTag for StepPointMCs derived from TargetStopsCat")};
+      fhicl::Table<Position> crystalFrontCentre{ Name("crystalFrontCentre"), Comment("Centre of the HPGe crystal front face in Mu2e coordinates [mm]")};
       fhicl::Atom<double> fADC{ Name("fADC"), Comment("ADC operating frequency [MHz}")};
       fhicl::Atom<double> ADCToEnergy {Name("EnergyPerADCBin"), Comment("ADC energy calibration [keV/bin]")};
       fhicl::Atom<double> noiseSD {Name("NoiseSD"), Comment("Standard deviation of ADC noise [mV]. Set this to 0.0 for the ideal case.")};
@@ -105,10 +112,7 @@ namespace mu2e {
     uint32_t eventTimeBuffer = 0;                                                                               // Multiple of event ids to store
 
     // Define Ge crystal properties [mm]
-    const double crystalCentreX = -3973.81;                                                                     // Crystal centre x position [mm]
-    const double crystalCentreY = 0;                                                                            // Crystal centre y position [mm]
-    const double crystalCentreZ = 40699.1;                                                                      // Crystal centre z position [mm]
-    CLHEP::Hep3Vector crystalCentrePosition;                                                                    // Crystal centre position vector
+    CLHEP::Hep3Vector crystalFrontPosition;                                                                     // Crystal front face centre in Mu2e coordinates [mm]
     // TODO - want to initialize hpgeEndcapCenterPosition and holeHemisphereCenter as consts here, but errors thrown
     CLHEP::Hep3Vector hitPosition;
     const double crystalL = 78.5;                                                                               // Crystal length [mm]
@@ -175,7 +179,7 @@ namespace mu2e {
         if (defaultMicrospillBufferLengthCount < 2)
           throw cet::exception("RANGE", "defaultMicrospillBufferLengthCount has to be more than 1\n");
 
-        crystalCentrePosition.set(crystalCentreX, crystalCentreY, crystalCentreZ);
+        crystalFrontPosition.set(conf().crystalFrontCentre().x(), conf().crystalFrontCentre().y(), conf().crystalFrontCentre().z());
         tADC = 1e3/fADC; // 1e3 converts [us] to [ns] as fADC is in [MHz]
 
         // Assign optional variables
@@ -224,6 +228,7 @@ namespace mu2e {
     if (verbosityLevel) {
       std::cout << "STM HPGe digitization parameters" << std::endl;
       std::cout << "\tInput parameters" << std::endl;
+      std::cout << std::left << "\t\t" << std::setw(60) << "crystalFrontCentre [mm]"              << crystalFrontPosition                     << std::endl;
       std::cout << std::left << "\t\t" << std::setw(60) << "fAD [MHz]"                            << fADC                                     << std::endl;
       std::cout << std::left << "\t\t" << std::setw(60) << "EnergyPerADCBin [keV/bin]"            << ADCToEnergy                              << std::endl;
       std::cout << std::left << "\t\t" << std::setw(60) << "NoiseSD [mV]"                         << noiseSD /(1e-3 * feedbackCapacitance/_e) << std::endl;
@@ -343,12 +348,10 @@ namespace mu2e {
       return;
 
     // Tranform the co-ordinate system to be a cylinder in the +z direction
-    // Shift the position to a local cylindrical co-ordinate system with the center of the crystal at the origin
-    hitPosition -= crystalCentrePosition;
+    // Shift the position to a local cylindrical co-ordinate system with the center of the crystal front face at the origin
+    hitPosition -= crystalFrontPosition;
     // Rotate the cylinder for the axis to point in the +z direction
     hitPosition.rotateY(45.0*CLHEP::degree);
-    // Shift the crystal so the front of the crystal is the start
-    hitPosition.setZ(hitPosition.z() + (crystalL/2));
 
     // Redefine the hit direction.
     hitR = hitPosition.perp();

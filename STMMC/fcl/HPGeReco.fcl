@@ -18,6 +18,7 @@ physics : {
   producers : {
     DigiHPGe : {
       module_type : HPGeWaveformsFromStepPointMCs
+      crystalFrontCentre : @local::ComponentPositions.HPGeCrystalEndcapCentre
       StepPointMCsTagEle : @local::STMMCAnalysis.MixedEventsTags.StepPointMCsTagEle
       StepPointMCsTagMu : @local::STMMCAnalysis.MixedEventsTags.StepPointMCsTagMu
       StepPointMCsTag1809 : @local::STMMCAnalysis.MixedEventsTags.StepPointMCsTag1809
