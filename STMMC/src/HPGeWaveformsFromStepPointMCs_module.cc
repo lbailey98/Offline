@@ -195,7 +195,7 @@ namespace mu2e {
         microspillBufferLengthCount = conf().microspillBufferLengthCount() ? *(conf().microspillBufferLengthCount()) : defaultMicrospillBufferLengthCount;
         verbosityLevel = conf().verbosityLevel() ? *(conf().verbosityLevel()) : 0;
 
-        // Determine the number of ADC values in each STMWaveformDigi. Increase the number by one due to truncation. At 320MHz, this will be 543 ADC values per microbunch
+        // Determine the number of ADC values in each STMWaveformDigi. Increase the number by one due to truncation. At 300MHz, this will be 509 ADC values per microbunch
         double _nADCs = (micropulseTime/tADC) + 1;
         nADCs = (int) _nADCs;
         _charge.insert(_charge.begin(), nADCs * microspillBufferLengthCount, 0.);
