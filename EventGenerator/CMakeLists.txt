@@ -329,6 +329,14 @@ cet_build_plugin(InFlightParticleSampler art::module
       Offline::SeedService
 )
 
+cet_build_plugin(IsotopeSourceGun art::module
+    REG_SOURCE src/IsotopeSourceGun_module.cc
+    LIBRARIES REG
+      Offline::DataProducts
+      Offline::MCDataProducts
+      Offline::SeedService
+)
+
 cet_build_plugin(LeadingLog art::module
     REG_SOURCE src/LeadingLog_module.cc
     LIBRARIES REG
