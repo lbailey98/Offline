@@ -653,6 +653,7 @@ cet_build_plugin(PhotonGun art::module
     LIBRARIES REG
       Offline::MCDataProducts
       Offline::DataProducts
+      Offline::SeedService
 )
 
 cet_build_plugin(RMCGenerator art::tool
