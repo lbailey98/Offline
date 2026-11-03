@@ -113,7 +113,6 @@ namespace mu2e {
     uint nADCs = 0;                                                                                             // Number of ADC values in an event
     const int16_t ADCMax = static_cast<int16_t>((-1 * std::pow(2, 15)) + 1);                                    // Maximum ADC value, power is 15 not 16 as using int16_t not uint16_t
     double ADC = 0;                                                                                             // iterator variable
-    uint32_t eventTimeBuffer = 0;                                                                               // Multiple of event ids to store
 
     // Define Ge crystal properties [mm]
     CLHEP::Hep3Vector crystalFrontPosition;                                                                     // Crystal front face centre in Mu2e coordinates [mm]
@@ -307,13 +306,8 @@ namespace mu2e {
     };
 
     // Simulation takes the POT time as t = 0, and has sequential microspills (events). The trigger time offset is not used here, left as a TODO
-    // Create the STMWaveformDigi and insert all the relevant attributes
-    // TODO - this only keeps accurate time if the sampling is 320MHz. Needs to be rewritten to work for other times
-    eventTimeBuffer = eventId % 5;
-    if (eventTimeBuffer == 0 || (eventId % 3) == 0)
-      eventTime += nADCs + 1;
-    else
-      eventTime += nADCs;
+    // Create the STMWaveformDigi and insert all the relevant attributes. The time stamp is the end of this microspill in ADC clock ticks
+    eventTime = static_cast<uint32_t>(std::llround(eventId * micropulseTime / tADC));
     STMWaveformDigi _waveformDigi(eventTime, _adcs);
     std::unique_ptr<STMWaveformDigiCollection> outputDigis(new STMWaveformDigiCollection);
     outputDigis->emplace_back(_waveformDigi);
