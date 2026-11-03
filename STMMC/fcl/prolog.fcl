@@ -197,7 +197,7 @@ STMDAQParameters : {
     }
 }
 HPGeDigitization : {
-    EnergyPerADCBin : 0.5 # keV/bin
+    EnergyPerADCBin : 0.375 # keV/bin, measured DAQ gain
     PreamplifierNoiseSD : 0.32 # mV
     DecayConstant : 50 # us
     resetEventNumber : 31858
