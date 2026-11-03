@@ -71,6 +71,7 @@ namespace mu2e {
       fhicl::Atom<double> fADC{ Name("fADC"), Comment("ADC operating frequency [MHz}")};
       fhicl::Atom<double> ADCToEnergy {Name("EnergyPerADCBin"), Comment("ADC energy calibration [keV/bin]")};
       fhicl::Atom<double> noiseSD {Name("NoiseSD"), Comment("Standard deviation of ADC noise [mV]. Set this to 0.0 for the ideal case.")};
+      fhicl::OptionalAtom<double> fanoFactor{ Name("FanoFactor"), Comment("Fano factor of eh pair creation (Ge ~0.1). Unset or 0.0 disables the fluctuation")};
       fhicl::Atom<double> risingEdgeDecayConstant{ Name("risingEdgeDecayConstant"), Comment("Rising edge decay time [us]")};
       fhicl::OptionalAtom<int> microspillBufferLengthCount{ Name("microspillBufferLengthCount"), Comment("Number of microspills to buffer ahead for, in number of microspills")};
       fhicl::OptionalAtom<bool> makeTTree{ Name("makeTTree"), Comment("Controls whether to make the TTree with branches chargeCollected, chargeDecayed, ADC, eventId, time")};
@@ -93,6 +94,7 @@ namespace mu2e {
     double fADC = 0;                                                                                            // ADC sampling frequency [MHz]
     double ADCToEnergy = 0;                                                                                     // Calibration of bin width to energy [keV/bin]
     double noiseSD = 0;                                                                                         // Standard deviation of ADC noise [mV]
+    double fanoFactor = 0;                                                                                      // Fano factor of eh pair creation
     double risingEdgeDecayConstant = 0;                                                                         // [us]
     bool makeTTree = false;                                                                                     // Controls whether an analysis TTree is made
     double timeOffset = 0.0;                                                                                    // Used for debugging [ns]
@@ -197,6 +199,7 @@ namespace mu2e {
         // Assign optional variables
         microspillBufferLengthCount = conf().microspillBufferLengthCount() ? *(conf().microspillBufferLengthCount()) : defaultMicrospillBufferLengthCount;
         verbosityLevel = conf().verbosityLevel() ? *(conf().verbosityLevel()) : 0;
+        fanoFactor = conf().fanoFactor() ? *(conf().fanoFactor()) : 0.0;
 
         // Determine the number of ADC values in each STMWaveformDigi. Increase the number by one due to truncation. At 300MHz, this will be 509 ADC values per microbunch
         double _nADCs = (micropulseTime/tADC) + 1;
@@ -244,6 +247,7 @@ namespace mu2e {
       std::cout << std::left << "\t\t" << std::setw(60) << "fAD [MHz]"                            << fADC                                     << std::endl;
       std::cout << std::left << "\t\t" << std::setw(60) << "EnergyPerADCBin [keV/bin]"            << ADCToEnergy                              << std::endl;
       std::cout << std::left << "\t\t" << std::setw(60) << "NoiseSD [mV]"                         << noiseSD /(1e-3 * feedbackCapacitance/_e) << std::endl;
+      std::cout << std::left << "\t\t" << std::setw(60) << "FanoFactor"                           << fanoFactor                               << std::endl;
       std::cout << std::left << "\t\t" << std::setw(60) << "risingEdgeDecayConstant [us]"         << risingEdgeDecayConstant                  << std::endl;
       std::cout << std::left << "\t\t" << std::setw(60) << "microspillBufferLengthCount"          << microspillBufferLengthCount              << std::endl;
       std::cout << std::left << "\t\t" << std::setw(60) << "makeTTree"                            << makeTTree                                << std::endl;
@@ -400,8 +404,11 @@ namespace mu2e {
     electronTravelTime = electronTravelDistance / electronDriftVelocity;
     holeTravelTime = holeTravelDistance / holeDriftVelocity;
 
-    // Calcuate the number of eh pairs from the ionizing energy deposition.
-    N_ehPairs = -1.0 * step.ionizingEdep() * 1e6 / epsilonGe; // 1e6 converts MeV to eV. -1.0 as this is a decreasing peak
+    // Calcuate the number of eh pairs from the ionizing energy deposition, with variance fanoFactor * N
+    double nPairs = step.ionizingEdep() * 1e6 / epsilonGe; // 1e6 converts MeV to eV
+    if (fanoFactor > 0.0)
+      nPairs += _noiseGauss.fire() * std::sqrt(fanoFactor * nPairs);
+    N_ehPairs = -1.0 * nPairs; // -1.0 as this is a decreasing peak
 
     // Define parameters required for charge deposition. Constants A and B are defined here for code brevity
     uint tIndex = (step.time() + timeOffset) / tADC, tIndexStart = tIndex;
