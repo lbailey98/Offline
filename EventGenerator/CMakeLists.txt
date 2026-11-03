@@ -467,6 +467,15 @@ cet_build_plugin(SingleProcessGenerator art::module
       Offline::SeedService
 )
 
+cet_build_plugin(STMLineSourceGun art::module
+    REG_SOURCE src/STMLineSourceGun_module.cc
+    LIBRARIES REG
+      art_root_io::TFileService_service
+      Offline::DataProducts
+      Offline::MCDataProducts
+      Offline::SeedService
+)
+
 cet_build_plugin(StoppedMuonRMCGun art::module
     REG_SOURCE src/StoppedMuonRMCGun_module.cc
     LIBRARIES REG
