@@ -1,6 +1,6 @@
 // Generates photons from (x,y,z), uniformly inside a cone around the aim direction
 // Original author: Claudia Alvarez-Garcia
-// Adapted by: Pawel Plesniak
+// Adapted by: Pawel Plesniak, Leo Liu
 
 // stdlib includes
 #include <cmath>

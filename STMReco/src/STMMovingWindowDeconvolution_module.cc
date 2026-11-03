@@ -1,7 +1,7 @@
 // Perform MWD algorithm on zero-suppressed digis
 // Original authors: Claudia Alvarez-Garcia, Alex Keshavarzi, and Mark Lancaster (see DocDB-XXXXX for details)
 // Adapted for Offline: Andy Edmonds
-// Adapted: Pawel Plesniak
+// Adapted: Pawel Plesniak, Leo Liu
 
 // stdlib includes
 #include <algorithm>

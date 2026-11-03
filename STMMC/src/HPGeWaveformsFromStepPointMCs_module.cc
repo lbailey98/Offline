@@ -2,6 +2,7 @@
 // Model based heavily on example provided in docDb 43617
 // See docDb 51487 for full documentation
 // Original author: Pawel Plesniak
+// Adapted by: Leo Liu
 
 // stdlib includes
 #include <algorithm>
