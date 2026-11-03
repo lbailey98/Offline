@@ -63,9 +63,10 @@ namespace mu2e {
       fhicl::Atom<double> z{ Name("z"), Comment("z [mm]")};
     };
     struct Config {
-      fhicl::Atom<art::InputTag> StepPointMCsTagEle{ Name("StepPointMCsTagEle"), Comment("InputTag for StepPointMCs derived from EleBeamCat")};
-      fhicl::Atom<art::InputTag> StepPointMCsTagMu{ Name("StepPointMCsTagMu"), Comment("InputTag for StepPointMCs derived from MuBeamCat")};
-      fhicl::Atom<art::InputTag> StepPointMCsTag1809{ Name("StepPointMCsTag1809"), Comment("InputTag for StepPointMCs derived from TargetStopsCat")};
+      fhicl::OptionalAtom<art::InputTag> StepPointMCsTagEle{ Name("StepPointMCsTagEle"), Comment("InputTag for StepPointMCs derived from EleBeamCat")};
+      fhicl::OptionalAtom<art::InputTag> StepPointMCsTagMu{ Name("StepPointMCsTagMu"), Comment("InputTag for StepPointMCs derived from MuBeamCat")};
+      fhicl::OptionalAtom<art::InputTag> StepPointMCsTag1809{ Name("StepPointMCsTag1809"), Comment("InputTag for StepPointMCs derived from TargetStopsCat")};
+      fhicl::OptionalAtom<art::InputTag> StepPointMCsTag{ Name("StepPointMCsTag"), Comment("InputTag for StepPointMCs from any other source, e.g. a particle gun")};
       fhicl::Table<Position> crystalFrontCentre{ Name("crystalFrontCentre"), Comment("Centre of the HPGe crystal front face in Mu2e coordinates [mm]")};
       fhicl::Atom<double> fADC{ Name("fADC"), Comment("ADC operating frequency [MHz}")};
       fhicl::Atom<double> ADCToEnergy {Name("EnergyPerADCBin"), Comment("ADC energy calibration [keV/bin]")};
@@ -88,7 +89,7 @@ namespace mu2e {
     void digitize();
 
     // fhicl variables
-    art::ProductToken<StepPointMCCollection> StepPointMCsTokenEle, StepPointMCsTokenMu, StepPointMCsToken1809;  // Token of StepPointMCs in STMDet
+    std::vector<art::ProductToken<StepPointMCCollection>> StepPointMCsTokens;                                   // Tokens of StepPointMCs in STMDet
     double fADC = 0;                                                                                            // ADC sampling frequency [MHz]
     double ADCToEnergy = 0;                                                                                     // Calibration of bin width to energy [keV/bin]
     double noiseSD = 0;                                                                                         // Standard deviation of ADC noise [mV]
@@ -175,9 +176,6 @@ namespace mu2e {
 
   HPGeWaveformsFromStepPointMCs::HPGeWaveformsFromStepPointMCs(const Parameters& conf)
     : art::EDProducer{conf},
-      StepPointMCsTokenEle(consumes<StepPointMCCollection>(conf().StepPointMCsTagEle())),
-      StepPointMCsTokenMu(consumes<StepPointMCCollection>(conf().StepPointMCsTagMu())),
-      StepPointMCsToken1809(consumes<StepPointMCCollection>(conf().StepPointMCsTag1809())),
       fADC(conf().fADC()),
       ADCToEnergy(conf().ADCToEnergy()),
       noiseSD(conf().noiseSD()),
@@ -185,6 +183,11 @@ namespace mu2e {
       _engine(createEngine(art::ServiceHandle<SeedService>()->getSeed())),
       _noiseGauss(_engine) {
         produces<STMWaveformDigiCollection>();
+        for (auto const& tag : {conf().StepPointMCsTagEle(), conf().StepPointMCsTagMu(), conf().StepPointMCsTag1809(), conf().StepPointMCsTag()})
+          if (tag)
+            StepPointMCsTokens.push_back(consumes<StepPointMCCollection>(*tag));
+        if (StepPointMCsTokens.empty())
+          throw cet::exception("Configuration", "No StepPointMCs input tag configured\n");
         if (defaultMicrospillBufferLengthCount < 2)
           throw cet::exception("RANGE", "defaultMicrospillBufferLengthCount has to be more than 1\n");
 
@@ -263,23 +266,12 @@ namespace mu2e {
 
   void HPGeWaveformsFromStepPointMCs::produce(art::Event& event) {
     eventId = event.id().event();
-    // Get the hits in the detector
-    std::vector<StepPointMC> StepsEle = event.getProduct(StepPointMCsTokenEle);
-    std::vector<StepPointMC> StepsMu = event.getProduct(StepPointMCsTokenMu);
-    std::vector<StepPointMC> Steps1809 = event.getProduct(StepPointMCsToken1809);
-
     // Add a collection of charge depositions to _charge
-    for(const StepPointMC& step : StepsEle){
-      if (step.ionizingEdep() != 0)
+    for (const auto& token : StepPointMCsTokens) {
+      for (const StepPointMC& step : event.getProduct(token)) {
+        if (step.ionizingEdep() != 0)
           depositCharge(step);
-    };
-    for(const StepPointMC& step : StepsMu){
-      if (step.ionizingEdep() != 0)
-          depositCharge(step);
-    };
-    for(const StepPointMC& step : Steps1809){
-      if (step.ionizingEdep() != 0)
-          depositCharge(step);
+      };
     };
 
     // Decay all of the collected charges
