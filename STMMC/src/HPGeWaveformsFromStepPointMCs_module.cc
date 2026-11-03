@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <bits/stdc++.h>
 #include <cmath>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <random>
@@ -49,7 +50,9 @@
 
 // ROOT includes
 #include "art_root_io/TFileService.h"
+#include "TComplex.h"
 #include "TTree.h"
+#include "TVirtualFFT.h"
 
 
 namespace mu2e {
@@ -71,6 +74,8 @@ namespace mu2e {
       fhicl::Atom<double> fADC{ Name("fADC"), Comment("ADC operating frequency [MHz}")};
       fhicl::Atom<double> ADCToEnergy {Name("EnergyPerADCBin"), Comment("ADC energy calibration [keV/bin]")};
       fhicl::Atom<double> noiseSD {Name("NoiseSD"), Comment("Standard deviation of ADC noise [mV]. Set this to 0.0 for the ideal case.")};
+      fhicl::OptionalAtom<std::string> noisePSDFile{ Name("NoisePSDFile"), Comment("Measured one-sided noise PSD replacing the NoiseSD white noise: little-endian float64, N/2+1 values [ADC^2/Hz] on the grid fADC/N, N a power of two, measured at fADC")};
+      fhicl::OptionalAtom<double> noisePSDScale{ Name("NoisePSDScale"), Comment("Amplitude scale of the PSD noise (default 1.0)")};
       fhicl::OptionalAtom<double> fanoFactor{ Name("FanoFactor"), Comment("Fano factor of eh pair creation (Ge ~0.1). Unset or 0.0 disables the fluctuation")};
       fhicl::Atom<double> risingEdgeDecayConstant{ Name("risingEdgeDecayConstant"), Comment("Rising edge decay time [us]")};
       fhicl::OptionalAtom<int> microspillBufferLengthCount{ Name("microspillBufferLengthCount"), Comment("Number of microspills to buffer ahead for, in number of microspills")};
@@ -88,6 +93,8 @@ namespace mu2e {
     void decayCharge();
     void addNoise();
     void digitize();
+    void loadNoisePSD();
+    void generateNoiseBuffer();
 
     // fhicl variables
     std::vector<art::ProductToken<StepPointMCCollection>> StepPointMCsTokens;                                   // Tokens of StepPointMCs in STMDet
@@ -95,6 +102,9 @@ namespace mu2e {
     double ADCToEnergy = 0;                                                                                     // Calibration of bin width to energy [keV/bin]
     double noiseSD = 0;                                                                                         // Standard deviation of ADC noise [mV]
     double fanoFactor = 0;                                                                                      // Fano factor of eh pair creation
+    bool usePSDNoise = false;                                                                                   // Noise sampled from a measured PSD instead of white noise
+    std::string noisePSDFile = "";                                                                              // One-sided noise PSD file
+    double noisePSDScale = 1.0;                                                                                 // Amplitude scale of the PSD noise
     double risingEdgeDecayConstant = 0;                                                                         // [us]
     bool makeTTree = false;                                                                                     // Controls whether an analysis TTree is made
     double timeOffset = 0.0;                                                                                    // Used for debugging [ns]
@@ -169,6 +179,13 @@ namespace mu2e {
     art::RandomNumberGenerator::base_engine_t& _engine;
     CLHEP::RandGaussQ _noiseGauss;                                                                              // Unit Gaussian
 
+    // PSD noise
+    std::vector<double> psd;                                                                                    // One-sided PSD [ADC^2/Hz]
+    int psdNSamples = 0;                                                                                        // FFT length N
+    std::vector<double> noiseBuffer;                                                                            // Noise realization [charge carriers]
+    size_t noiseBufferPos = 0;                                                                                  // Next unused sample in noiseBuffer
+    std::unique_ptr<TVirtualFFT> noiseFFT;                                                                      // Inverse FFT plan
+
     // Offline utilities
     // TODO: include the prodition to get the sampling frequency
     // mu2e::STMChannel::enum_type _HPGeChannel = static_cast<mu2e::STMChannel::enum_type>(1);
@@ -237,6 +254,18 @@ namespace mu2e {
         };
 
         resetEventNumber = conf().resetEventNumber() ? *(conf().resetEventNumber()) : 0;
+
+        // PSD noise replaces the white noise
+        if (conf().noisePSDFile()) {
+          usePSDNoise = true;
+          noisePSDFile = *(conf().noisePSDFile());
+          noisePSDScale = conf().noisePSDScale() ? *(conf().noisePSDScale()) : 1.0;
+          if (noisePSDScale <= 0.0)
+            throw cet::exception("Configuration", "NoisePSDScale must be positive\n");
+          loadNoisePSD();
+        }
+        else if (conf().noisePSDScale())
+          throw cet::exception("Configuration", "NoisePSDScale requires NoisePSDFile\n");
       };
 
   void HPGeWaveformsFromStepPointMCs::beginJob() {
@@ -247,6 +276,9 @@ namespace mu2e {
       std::cout << std::left << "\t\t" << std::setw(60) << "fAD [MHz]"                            << fADC                                     << std::endl;
       std::cout << std::left << "\t\t" << std::setw(60) << "EnergyPerADCBin [keV/bin]"            << ADCToEnergy                              << std::endl;
       std::cout << std::left << "\t\t" << std::setw(60) << "NoiseSD [mV]"                         << noiseSD /(1e-3 * feedbackCapacitance/_e) << std::endl;
+      std::cout << std::left << "\t\t" << std::setw(60) << "NoisePSDFile"                         << (usePSDNoise ? noisePSDFile : "none")    << std::endl;
+      if (usePSDNoise)
+        std::cout << std::left << "\t\t" << std::setw(60) << "NoisePSDScale"                      << noisePSDScale                            << std::endl;
       std::cout << std::left << "\t\t" << std::setw(60) << "FanoFactor"                           << fanoFactor                               << std::endl;
       std::cout << std::left << "\t\t" << std::setw(60) << "risingEdgeDecayConstant [us]"         << risingEdgeDecayConstant                  << std::endl;
       std::cout << std::left << "\t\t" << std::setw(60) << "microspillBufferLengthCount"          << microspillBufferLengthCount              << std::endl;
@@ -466,6 +498,15 @@ namespace mu2e {
   };
 
   void HPGeWaveformsFromStepPointMCs::addNoise() {
+    // PSD noise: one realization spans several microspills, which keeps the spectrum below the microspill frequency
+    if (usePSDNoise) {
+      if (noiseBuffer.size() - noiseBufferPos < nADCs)
+        generateNoiseBuffer();
+      for (size_t _i = 0; _i < nADCs; _i++)
+        _chargeDecayed[_i] += noiseBuffer[noiseBufferPos++];
+      return;
+    };
+
     // If the noise SD is zero, do nothing
     if (noiseSD < std::numeric_limits<double>::epsilon())
       return;
@@ -473,6 +514,59 @@ namespace mu2e {
     // Add the noise in multiples of the fundamental charge
     for (size_t _i = 0; _i < nADCs; _i++)
       _chargeDecayed[_i] += noiseSD * _noiseGauss.fire();
+    return;
+  };
+
+  void HPGeWaveformsFromStepPointMCs::loadNoisePSD() {
+    std::ifstream in(noisePSDFile, std::ios::binary | std::ios::ate);
+    if (!in)
+      throw cet::exception("Configuration", "NoisePSDFile cannot be opened: " + noisePSDFile + "\n");
+    const std::streamsize nBytes = in.tellg();
+    const size_t nVals = nBytes / sizeof(double);
+    if (nBytes % sizeof(double) != 0 || nVals < 2)
+      throw cet::exception("Configuration", "NoisePSDFile is not a sequence of at least two float64 values: " + noisePSDFile + "\n");
+    psdNSamples = 2 * (nVals - 1);
+    if ((psdNSamples & (psdNSamples - 1)) != 0)
+      throw cet::exception("Configuration", "NoisePSDFile must hold N/2+1 values with N a power of two, got " + std::to_string(nVals) + " values\n");
+    if (static_cast<uint>(psdNSamples) < nADCs)
+      throw cet::exception("Configuration", "NoisePSDFile FFT length " + std::to_string(psdNSamples) + " is shorter than one microspill (" + std::to_string(nADCs) + " samples)\n");
+    psd.resize(nVals);
+    in.seekg(0);
+    in.read(reinterpret_cast<char*>(psd.data()), nBytes);
+    if (!in)
+      throw cet::exception("Configuration", "Failed reading NoisePSDFile: " + noisePSDFile + "\n");
+    for (double v : psd) {
+      if (!std::isfinite(v) || v < 0.0)
+        throw cet::exception("Configuration", "NoisePSDFile contains a negative or non-finite PSD value\n");
+    };
+    // "K" returns a new plan owned by the caller, so it is made once here and reused
+    noiseFFT.reset(TVirtualFFT::FFT(1, &psdNSamples, "C2R ES K"));
+    if (!noiseFFT)
+      throw cet::exception("Configuration", "TVirtualFFT C2R unavailable - ROOT FFTW plugin missing\n");
+    return;
+  };
+
+  void HPGeWaveformsFromStepPointMCs::generateNoiseBuffer() {
+    // Random one-sided spectrum with E|X[k]|^2 = S[k]*fs*N/2 (S[k]*fs*N at Nyquist, zero at DC), so the sample
+    // variance is sum(S[k])*fs/N, the integral of the PSD. The C2R transform is unnormalized, hence the 1/N.
+    const int N = psdNSamples;
+    const double fsHz = fADC * 1e6; // fADC is in MHz
+    TComplex c(0.0, 0.0); // SetPointComplex takes a non-const reference
+    noiseFFT->SetPointComplex(0, c);
+    for (int k = 1; k < N/2; k++) {
+      const double sigma = std::sqrt(psd[k] * fsHz * N / 4.0);
+      c = TComplex(sigma * _noiseGauss.fire(), sigma * _noiseGauss.fire());
+      noiseFFT->SetPointComplex(k, c);
+    };
+    c = TComplex(std::sqrt(psd[N/2] * fsHz * N) * _noiseGauss.fire(), 0.0);
+    noiseFFT->SetPointComplex(N/2, c);
+    noiseFFT->Transform();
+    // Convert from ADC counts to charge carriers
+    const double toCarriers = noisePSDScale / (N * chargeToADC);
+    noiseBuffer.assign(N, 0.0);
+    for (int n = 0; n < N; n++)
+      noiseBuffer[n] = noiseFFT->GetPointReal(n) * toCarriers;
+    noiseBufferPos = 0;
     return;
   };
 
