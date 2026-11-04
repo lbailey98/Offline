@@ -24,6 +24,15 @@ cet_build_plugin(DetectorEfficiency art::module
       Offline::MCDataProducts
 )
 
+cet_build_plugin(HPGeAcceptance art::module
+    REG_SOURCE src/HPGeAcceptance_module.cc
+    LIBRARIES REG
+      art_root_io::TFileService_service
+      Offline::GeometryService
+      Offline::MCDataProducts
+      Offline::STMGeom
+)
+
 cet_build_plugin(HPGeTree art::module
     REG_SOURCE src/HPGeTree_module.cc
     LIBRARIES REG
@@ -40,6 +49,7 @@ cet_build_plugin(HPGeWaveformsFromStepPointMCs art::module
       Offline::Mu2eUtilities
       Offline::ProditionsService
       Offline::RecoDataProducts
+      Offline::SeedService
       Offline::STMConditions
       Offline::GlobalConstantsService
 )

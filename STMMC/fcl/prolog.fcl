@@ -37,7 +37,7 @@ ComponentPositions : { # In beam order
         y : 0.0
         z : 40380.45
     }
-    HPGeCrystalEndcapCentre : { # Not referenced by any fcl. Center of the HPGe crystal's
+    HPGeCrystalEndcapCentre : { # crystalFrontCentre of HPGeWaveformsFromStepPointMCs. Center of the HPGe crystal's
                                 # front face, 5.53 mm (window + air + capsule window) along
                                 # the 45-degree detector axis from the window, which sits at
                                 # x = beam - 40.64 + offset_HPGe (-10), z = 40325.3 + 327.4
@@ -192,13 +192,14 @@ SimplifyStage2Data : {
 # DAQ parameters
 STMDAQParameters : {
     samplingFrequencies : {
-        HPGe : 320 # MSPS - copied from Offline/STMConditions/fcl/prolog.fcl
+        HPGe : 300 # MSPS - copied from Offline/STMConditions/fcl/prolog.fcl
         LaBr : 370.370370370 # MSPS - copied from Offline/STMConditions/fcl/prolog.fcl
     }
 }
 HPGeDigitization : {
-    EnergyPerADCBin : 0.5 # keV/bin
+    EnergyPerADCBin : 0.375 # keV/bin, measured DAQ gain
     PreamplifierNoiseSD : 0.32 # mV
+    FanoFactor : 0.1 # Ge at 77 K
     DecayConstant : 50 # us
     resetEventNumber : 31858
     microspillBufferLengthCount : 1000

@@ -2,11 +2,13 @@
 // Model based heavily on example provided in docDb 43617
 // See docDb 51487 for full documentation
 // Original author: Pawel Plesniak
+// Adapted by: Leo Liu
 
 // stdlib includes
 #include <algorithm>
 #include <bits/stdc++.h>
 #include <cmath>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <random>
@@ -17,11 +19,14 @@
 #include "art/Framework/Core/EDProducer.h"
 #include "art/Framework/Principal/Event.h"
 #include "art/Framework/Principal/Handle.h"
+#include "art/Framework/Services/Optional/RandomNumberGenerator.h"
+#include "art/Framework/Services/Registry/ServiceHandle.h"
 
 // CLHEP includes
 #include "CLHEP/Vector/ThreeVector.h"
 #include "CLHEP/Vector/Rotation.h"
 #include "CLHEP/Units/PhysicalConstants.h"
+#include "CLHEP/Random/RandGaussQ.h"
 
 // exception handling
 #include "cetlib_except/exception.h"
@@ -30,6 +35,7 @@
 #include "canvas/Utilities/InputTag.h"
 #include "fhiclcpp/types/Atom.h"
 #include "fhiclcpp/types/OptionalAtom.h"
+#include "fhiclcpp/types/Table.h"
 
 // message handling
 #include "messagefacility/MessageLogger/MessageLogger.h"
@@ -40,11 +46,14 @@
 // #include "Offline/Mu2eUtilities/inc/STMUtils.hh"
 // #include "Offline/ProditionsService/inc/ProditionsHandle.hh"
 #include "Offline/RecoDataProducts/inc/STMWaveformDigi.hh"
+#include "Offline/SeedService/inc/SeedService.hh"
 // #include "Offline/STMConditions/inc/STMEnergyCalib.hh"
 
 // ROOT includes
 #include "art_root_io/TFileService.h"
+#include "TComplex.h"
 #include "TTree.h"
+#include "TVirtualFFT.h"
 
 
 namespace mu2e {
@@ -52,13 +61,23 @@ namespace mu2e {
   public:
     using Name=fhicl::Name;
     using Comment=fhicl::Comment;
+    struct Position {
+      fhicl::Atom<double> x{ Name("x"), Comment("x [mm]")};
+      fhicl::Atom<double> y{ Name("y"), Comment("y [mm]")};
+      fhicl::Atom<double> z{ Name("z"), Comment("z [mm]")};
+    };
     struct Config {
-      fhicl::Atom<art::InputTag> StepPointMCsTagEle{ Name("StepPointMCsTagEle"), Comment("InputTag for StepPointMCs derived from EleBeamCat")};
-      fhicl::Atom<art::InputTag> StepPointMCsTagMu{ Name("StepPointMCsTagMu"), Comment("InputTag for StepPointMCs derived from MuBeamCat")};
-      fhicl::Atom<art::InputTag> StepPointMCsTag1809{ Name("StepPointMCsTag1809"), Comment("InputTag for StepPointMCs derived from TargetStopsCat")};
+      fhicl::OptionalAtom<art::InputTag> StepPointMCsTagEle{ Name("StepPointMCsTagEle"), Comment("InputTag for StepPointMCs derived from EleBeamCat")};
+      fhicl::OptionalAtom<art::InputTag> StepPointMCsTagMu{ Name("StepPointMCsTagMu"), Comment("InputTag for StepPointMCs derived from MuBeamCat")};
+      fhicl::OptionalAtom<art::InputTag> StepPointMCsTag1809{ Name("StepPointMCsTag1809"), Comment("InputTag for StepPointMCs derived from TargetStopsCat")};
+      fhicl::OptionalAtom<art::InputTag> StepPointMCsTag{ Name("StepPointMCsTag"), Comment("InputTag for StepPointMCs from any other source, e.g. a particle gun")};
+      fhicl::Table<Position> crystalFrontCentre{ Name("crystalFrontCentre"), Comment("Centre of the HPGe crystal front face in Mu2e coordinates [mm]")};
       fhicl::Atom<double> fADC{ Name("fADC"), Comment("ADC operating frequency [MHz}")};
       fhicl::Atom<double> ADCToEnergy {Name("EnergyPerADCBin"), Comment("ADC energy calibration [keV/bin]")};
       fhicl::Atom<double> noiseSD {Name("NoiseSD"), Comment("Standard deviation of ADC noise [mV]. Set this to 0.0 for the ideal case.")};
+      fhicl::OptionalAtom<std::string> noisePSDFile{ Name("NoisePSDFile"), Comment("Measured one-sided noise PSD replacing the NoiseSD white noise: little-endian float64, N/2+1 values [ADC^2/Hz] on the grid fADC/N, N a power of two, measured at fADC")};
+      fhicl::OptionalAtom<double> noisePSDScale{ Name("NoisePSDScale"), Comment("Amplitude scale of the PSD noise (default 1.0)")};
+      fhicl::OptionalAtom<double> fanoFactor{ Name("FanoFactor"), Comment("Fano factor of eh pair creation (Ge ~0.1). Unset or 0.0 disables the fluctuation")};
       fhicl::Atom<double> risingEdgeDecayConstant{ Name("risingEdgeDecayConstant"), Comment("Rising edge decay time [us]")};
       fhicl::OptionalAtom<int> microspillBufferLengthCount{ Name("microspillBufferLengthCount"), Comment("Number of microspills to buffer ahead for, in number of microspills")};
       fhicl::OptionalAtom<bool> makeTTree{ Name("makeTTree"), Comment("Controls whether to make the TTree with branches chargeCollected, chargeDecayed, ADC, eventId, time")};
@@ -75,12 +94,18 @@ namespace mu2e {
     void decayCharge();
     void addNoise();
     void digitize();
+    void loadNoisePSD();
+    void generateNoiseBuffer();
 
     // fhicl variables
-    art::ProductToken<StepPointMCCollection> StepPointMCsTokenEle, StepPointMCsTokenMu, StepPointMCsToken1809;  // Token of StepPointMCs in STMDet
+    std::vector<art::ProductToken<StepPointMCCollection>> StepPointMCsTokens;                                   // Tokens of StepPointMCs in STMDet
     double fADC = 0;                                                                                            // ADC sampling frequency [MHz]
     double ADCToEnergy = 0;                                                                                     // Calibration of bin width to energy [keV/bin]
     double noiseSD = 0;                                                                                         // Standard deviation of ADC noise [mV]
+    double fanoFactor = 0;                                                                                      // Fano factor of eh pair creation
+    bool usePSDNoise = false;                                                                                   // Noise sampled from a measured PSD instead of white noise
+    std::string noisePSDFile = "";                                                                              // One-sided noise PSD file
+    double noisePSDScale = 1.0;                                                                                 // Amplitude scale of the PSD noise
     double risingEdgeDecayConstant = 0;                                                                         // [us]
     bool makeTTree = false;                                                                                     // Controls whether an analysis TTree is made
     double timeOffset = 0.0;                                                                                    // Used for debugging [ns]
@@ -102,13 +127,9 @@ namespace mu2e {
     uint nADCs = 0;                                                                                             // Number of ADC values in an event
     const int16_t ADCMax = static_cast<int16_t>((-1 * std::pow(2, 15)) + 1);                                    // Maximum ADC value, power is 15 not 16 as using int16_t not uint16_t
     double ADC = 0;                                                                                             // iterator variable
-    uint32_t eventTimeBuffer = 0;                                                                               // Multiple of event ids to store
 
     // Define Ge crystal properties [mm]
-    const double crystalCentreX = -3973.81;                                                                     // Crystal centre x position [mm]
-    const double crystalCentreY = 0;                                                                            // Crystal centre y position [mm]
-    const double crystalCentreZ = 40699.1;                                                                      // Crystal centre z position [mm]
-    CLHEP::Hep3Vector crystalCentrePosition;                                                                    // Crystal centre position vector
+    CLHEP::Hep3Vector crystalFrontPosition;                                                                     // Crystal front face centre in Mu2e coordinates [mm]
     // TODO - want to initialize hpgeEndcapCenterPosition and holeHemisphereCenter as consts here, but errors thrown
     CLHEP::Hep3Vector hitPosition;
     const double crystalL = 78.5;                                                                               // Crystal length [mm]
@@ -155,6 +176,17 @@ namespace mu2e {
     std::vector<double> _chargeCarryOver;                                                                       // Temporary buffer that will store _chargeCollected over the course of the next event
     std::vector<int16_t> _adcs;                                                                                 // Buffer for storing the ADC values to put into the STMWaveformDigi
 
+    // Random number generation
+    art::RandomNumberGenerator::base_engine_t& _engine;
+    CLHEP::RandGaussQ _noiseGauss;                                                                              // Unit Gaussian
+
+    // PSD noise
+    std::vector<double> psd;                                                                                    // One-sided PSD [ADC^2/Hz]
+    int psdNSamples = 0;                                                                                        // FFT length N
+    std::vector<double> noiseBuffer;                                                                            // Noise realization [charge carriers]
+    size_t noiseBufferPos = 0;                                                                                  // Next unused sample in noiseBuffer
+    std::unique_ptr<TVirtualFFT> noiseFFT;                                                                      // Inverse FFT plan
+
     // Offline utilities
     // TODO: include the prodition to get the sampling frequency
     // mu2e::STMChannel::enum_type _HPGeChannel = static_cast<mu2e::STMChannel::enum_type>(1);
@@ -164,25 +196,30 @@ namespace mu2e {
 
   HPGeWaveformsFromStepPointMCs::HPGeWaveformsFromStepPointMCs(const Parameters& conf)
     : art::EDProducer{conf},
-      StepPointMCsTokenEle(consumes<StepPointMCCollection>(conf().StepPointMCsTagEle())),
-      StepPointMCsTokenMu(consumes<StepPointMCCollection>(conf().StepPointMCsTagMu())),
-      StepPointMCsToken1809(consumes<StepPointMCCollection>(conf().StepPointMCsTag1809())),
       fADC(conf().fADC()),
       ADCToEnergy(conf().ADCToEnergy()),
       noiseSD(conf().noiseSD()),
-      risingEdgeDecayConstant(conf().risingEdgeDecayConstant()) {
+      risingEdgeDecayConstant(conf().risingEdgeDecayConstant()),
+      _engine(createEngine(art::ServiceHandle<SeedService>()->getSeed())),
+      _noiseGauss(_engine) {
         produces<STMWaveformDigiCollection>();
+        for (auto const& tag : {conf().StepPointMCsTagEle(), conf().StepPointMCsTagMu(), conf().StepPointMCsTag1809(), conf().StepPointMCsTag()})
+          if (tag)
+            StepPointMCsTokens.push_back(consumes<StepPointMCCollection>(*tag));
+        if (StepPointMCsTokens.empty())
+          throw cet::exception("Configuration", "No StepPointMCs input tag configured\n");
         if (defaultMicrospillBufferLengthCount < 2)
           throw cet::exception("RANGE", "defaultMicrospillBufferLengthCount has to be more than 1\n");
 
-        crystalCentrePosition.set(crystalCentreX, crystalCentreY, crystalCentreZ);
+        crystalFrontPosition.set(conf().crystalFrontCentre().x(), conf().crystalFrontCentre().y(), conf().crystalFrontCentre().z());
         tADC = 1e3/fADC; // 1e3 converts [us] to [ns] as fADC is in [MHz]
 
         // Assign optional variables
         microspillBufferLengthCount = conf().microspillBufferLengthCount() ? *(conf().microspillBufferLengthCount()) : defaultMicrospillBufferLengthCount;
         verbosityLevel = conf().verbosityLevel() ? *(conf().verbosityLevel()) : 0;
+        fanoFactor = conf().fanoFactor() ? *(conf().fanoFactor()) : 0.0;
 
-        // Determine the number of ADC values in each STMWaveformDigi. Increase the number by one due to truncation. At 320MHz, this will be 543 ADC values per microbunch
+        // Determine the number of ADC values in each STMWaveformDigi. Increase the number by one due to truncation. At 300MHz, this will be 509 ADC values per microbunch
         double _nADCs = (micropulseTime/tADC) + 1;
         nADCs = (int) _nADCs;
         _charge.insert(_charge.begin(), nADCs * microspillBufferLengthCount, 0.);
@@ -218,15 +255,32 @@ namespace mu2e {
         };
 
         resetEventNumber = conf().resetEventNumber() ? *(conf().resetEventNumber()) : 0;
+
+        // PSD noise replaces the white noise
+        if (conf().noisePSDFile()) {
+          usePSDNoise = true;
+          noisePSDFile = *(conf().noisePSDFile());
+          noisePSDScale = conf().noisePSDScale() ? *(conf().noisePSDScale()) : 1.0;
+          if (noisePSDScale <= 0.0)
+            throw cet::exception("Configuration", "NoisePSDScale must be positive\n");
+          loadNoisePSD();
+        }
+        else if (conf().noisePSDScale())
+          throw cet::exception("Configuration", "NoisePSDScale requires NoisePSDFile\n");
       };
 
   void HPGeWaveformsFromStepPointMCs::beginJob() {
     if (verbosityLevel) {
       std::cout << "STM HPGe digitization parameters" << std::endl;
       std::cout << "\tInput parameters" << std::endl;
+      std::cout << std::left << "\t\t" << std::setw(60) << "crystalFrontCentre [mm]"              << crystalFrontPosition                     << std::endl;
       std::cout << std::left << "\t\t" << std::setw(60) << "fAD [MHz]"                            << fADC                                     << std::endl;
       std::cout << std::left << "\t\t" << std::setw(60) << "EnergyPerADCBin [keV/bin]"            << ADCToEnergy                              << std::endl;
       std::cout << std::left << "\t\t" << std::setw(60) << "NoiseSD [mV]"                         << noiseSD /(1e-3 * feedbackCapacitance/_e) << std::endl;
+      std::cout << std::left << "\t\t" << std::setw(60) << "NoisePSDFile"                         << (usePSDNoise ? noisePSDFile : "none")    << std::endl;
+      if (usePSDNoise)
+        std::cout << std::left << "\t\t" << std::setw(60) << "NoisePSDScale"                      << noisePSDScale                            << std::endl;
+      std::cout << std::left << "\t\t" << std::setw(60) << "FanoFactor"                           << fanoFactor                               << std::endl;
       std::cout << std::left << "\t\t" << std::setw(60) << "risingEdgeDecayConstant [us]"         << risingEdgeDecayConstant                  << std::endl;
       std::cout << std::left << "\t\t" << std::setw(60) << "microspillBufferLengthCount"          << microspillBufferLengthCount              << std::endl;
       std::cout << std::left << "\t\t" << std::setw(60) << "makeTTree"                            << makeTTree                                << std::endl;
@@ -249,23 +303,12 @@ namespace mu2e {
 
   void HPGeWaveformsFromStepPointMCs::produce(art::Event& event) {
     eventId = event.id().event();
-    // Get the hits in the detector
-    std::vector<StepPointMC> StepsEle = event.getProduct(StepPointMCsTokenEle);
-    std::vector<StepPointMC> StepsMu = event.getProduct(StepPointMCsTokenMu);
-    std::vector<StepPointMC> Steps1809 = event.getProduct(StepPointMCsToken1809);
-
     // Add a collection of charge depositions to _charge
-    for(const StepPointMC& step : StepsEle){
-      if (step.ionizingEdep() != 0)
+    for (const auto& token : StepPointMCsTokens) {
+      for (const StepPointMC& step : event.getProduct(token)) {
+        if (step.ionizingEdep() != 0)
           depositCharge(step);
-    };
-    for(const StepPointMC& step : StepsMu){
-      if (step.ionizingEdep() != 0)
-          depositCharge(step);
-    };
-    for(const StepPointMC& step : Steps1809){
-      if (step.ionizingEdep() != 0)
-          depositCharge(step);
+      };
     };
 
     // Decay all of the collected charges
@@ -292,13 +335,8 @@ namespace mu2e {
     };
 
     // Simulation takes the POT time as t = 0, and has sequential microspills (events). The trigger time offset is not used here, left as a TODO
-    // Create the STMWaveformDigi and insert all the relevant attributes
-    // TODO - this only keeps accurate time if the sampling is 320MHz. Needs to be rewritten to work for other times
-    eventTimeBuffer = eventId % 5;
-    if (eventTimeBuffer == 0 || (eventId % 3) == 0)
-      eventTime += nADCs + 1;
-    else
-      eventTime += nADCs;
+    // Create the STMWaveformDigi and insert all the relevant attributes. The time stamp is the end of this microspill in ADC clock ticks
+    eventTime = static_cast<uint32_t>(std::llround(eventId * micropulseTime / tADC));
     STMWaveformDigi _waveformDigi(eventTime, _adcs);
     std::unique_ptr<STMWaveformDigiCollection> outputDigis(new STMWaveformDigiCollection);
     outputDigis->emplace_back(_waveformDigi);
@@ -334,7 +372,8 @@ namespace mu2e {
     // Define variables that couldn't be constructed in the class constructor
     const CLHEP::Hep3Vector holeHemisphereCenter(0.0, 0.0, crystalHoleZStart); // Crystal hole position in local crystal co-ordinates
 
-    hitPosition = step.position();
+    // The post-step point is where a discrete interaction, e.g. photoabsorption, deposits its energy
+    hitPosition = step.postPosition();
     // Only take the StepPoinMCs in the HPGe detector. STMDet is both sensitive volume of both the HPGe and LaBr.
     if (hitPosition.x() > -3904)
       return;
@@ -343,12 +382,10 @@ namespace mu2e {
       return;
 
     // Tranform the co-ordinate system to be a cylinder in the +z direction
-    // Shift the position to a local cylindrical co-ordinate system with the center of the crystal at the origin
-    hitPosition -= crystalCentrePosition;
+    // Shift the position to a local cylindrical co-ordinate system with the center of the crystal front face at the origin
+    hitPosition -= crystalFrontPosition;
     // Rotate the cylinder for the axis to point in the +z direction
     hitPosition.rotateY(45.0*CLHEP::degree);
-    // Shift the crystal so the front of the crystal is the start
-    hitPosition.setZ(hitPosition.z() + (crystalL/2));
 
     // Redefine the hit direction.
     hitR = hitPosition.perp();
@@ -395,14 +432,17 @@ namespace mu2e {
     };
 
     if (holeTravelDistance < 0 || electronTravelDistance < 0)
-      throw cet::exception("LogicError") << "Electron (" << electronTravelDistance << ") and hole (" << holeTravelDistance << ") travelling distances should both be positve.\nPosition found at " << step.position() << "(" << hitPosition << ")\n";
+      throw cet::exception("LogicError") << "Electron (" << electronTravelDistance << ") and hole (" << holeTravelDistance << ") travelling distances should both be positve.\nPosition found at " << step.postPosition() << "(" << hitPosition << ")\n";
 
     // Calculate the drift times
     electronTravelTime = electronTravelDistance / electronDriftVelocity;
     holeTravelTime = holeTravelDistance / holeDriftVelocity;
 
-    // Calcuate the number of eh pairs from the ionizing energy deposition.
-    N_ehPairs = -1.0 * step.ionizingEdep() * 1e6 / epsilonGe; // 1e6 converts MeV to eV. -1.0 as this is a decreasing peak
+    // Calcuate the number of eh pairs from the ionizing energy deposition, with variance fanoFactor * N
+    double nPairs = step.ionizingEdep() * 1e6 / epsilonGe; // 1e6 converts MeV to eV
+    if (fanoFactor > 0.0)
+      nPairs += _noiseGauss.fire() * std::sqrt(fanoFactor * nPairs);
+    N_ehPairs = -1.0 * nPairs; // -1.0 as this is a decreasing peak
 
     // Define parameters required for charge deposition. Constants A and B are defined here for code brevity
     uint tIndex = (step.time() + timeOffset) / tADC, tIndexStart = tIndex;
@@ -460,15 +500,75 @@ namespace mu2e {
   };
 
   void HPGeWaveformsFromStepPointMCs::addNoise() {
+    // PSD noise: one realization spans several microspills, which keeps the spectrum below the microspill frequency
+    if (usePSDNoise) {
+      if (noiseBuffer.size() - noiseBufferPos < nADCs)
+        generateNoiseBuffer();
+      for (size_t _i = 0; _i < nADCs; _i++)
+        _chargeDecayed[_i] += noiseBuffer[noiseBufferPos++];
+      return;
+    };
+
     // If the noise SD is zero, do nothing
     if (noiseSD < std::numeric_limits<double>::epsilon())
       return;
 
     // Add the noise in multiples of the fundamental charge
-    std::default_random_engine _randomGen;
-    std::normal_distribution<double> _noiseDistribution(0.0, noiseSD);
     for (size_t _i = 0; _i < nADCs; _i++)
-      _chargeDecayed[_i] += _noiseDistribution(_randomGen);
+      _chargeDecayed[_i] += noiseSD * _noiseGauss.fire();
+    return;
+  };
+
+  void HPGeWaveformsFromStepPointMCs::loadNoisePSD() {
+    std::ifstream in(noisePSDFile, std::ios::binary | std::ios::ate);
+    if (!in)
+      throw cet::exception("Configuration", "NoisePSDFile cannot be opened: " + noisePSDFile + "\n");
+    const std::streamsize nBytes = in.tellg();
+    const size_t nVals = nBytes / sizeof(double);
+    if (nBytes % sizeof(double) != 0 || nVals < 2)
+      throw cet::exception("Configuration", "NoisePSDFile is not a sequence of at least two float64 values: " + noisePSDFile + "\n");
+    psdNSamples = 2 * (nVals - 1);
+    if ((psdNSamples & (psdNSamples - 1)) != 0)
+      throw cet::exception("Configuration", "NoisePSDFile must hold N/2+1 values with N a power of two, got " + std::to_string(nVals) + " values\n");
+    if (static_cast<uint>(psdNSamples) < nADCs)
+      throw cet::exception("Configuration", "NoisePSDFile FFT length " + std::to_string(psdNSamples) + " is shorter than one microspill (" + std::to_string(nADCs) + " samples)\n");
+    psd.resize(nVals);
+    in.seekg(0);
+    in.read(reinterpret_cast<char*>(psd.data()), nBytes);
+    if (!in)
+      throw cet::exception("Configuration", "Failed reading NoisePSDFile: " + noisePSDFile + "\n");
+    for (double v : psd) {
+      if (!std::isfinite(v) || v < 0.0)
+        throw cet::exception("Configuration", "NoisePSDFile contains a negative or non-finite PSD value\n");
+    };
+    // "K" returns a new plan owned by the caller, so it is made once here and reused
+    noiseFFT.reset(TVirtualFFT::FFT(1, &psdNSamples, "C2R ES K"));
+    if (!noiseFFT)
+      throw cet::exception("Configuration", "TVirtualFFT C2R unavailable - ROOT FFTW plugin missing\n");
+    return;
+  };
+
+  void HPGeWaveformsFromStepPointMCs::generateNoiseBuffer() {
+    // Random one-sided spectrum with E|X[k]|^2 = S[k]*fs*N/2 (S[k]*fs*N at Nyquist, zero at DC), so the sample
+    // variance is sum(S[k])*fs/N, the integral of the PSD. The C2R transform is unnormalized, hence the 1/N.
+    const int N = psdNSamples;
+    const double fsHz = fADC * 1e6; // fADC is in MHz
+    TComplex c(0.0, 0.0); // SetPointComplex takes a non-const reference
+    noiseFFT->SetPointComplex(0, c);
+    for (int k = 1; k < N/2; k++) {
+      const double sigma = std::sqrt(psd[k] * fsHz * N / 4.0);
+      c = TComplex(sigma * _noiseGauss.fire(), sigma * _noiseGauss.fire());
+      noiseFFT->SetPointComplex(k, c);
+    };
+    c = TComplex(std::sqrt(psd[N/2] * fsHz * N) * _noiseGauss.fire(), 0.0);
+    noiseFFT->SetPointComplex(N/2, c);
+    noiseFFT->Transform();
+    // Convert from ADC counts to charge carriers
+    const double toCarriers = noisePSDScale / (N * chargeToADC);
+    noiseBuffer.assign(N, 0.0);
+    for (int n = 0; n < N; n++)
+      noiseBuffer[n] = noiseFFT->GetPointReal(n) * toCarriers;
+    noiseBufferPos = 0;
     return;
   };
 

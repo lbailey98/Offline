@@ -329,6 +329,14 @@ cet_build_plugin(InFlightParticleSampler art::module
       Offline::SeedService
 )
 
+cet_build_plugin(IsotopeSourceGun art::module
+    REG_SOURCE src/IsotopeSourceGun_module.cc
+    LIBRARIES REG
+      Offline::DataProducts
+      Offline::MCDataProducts
+      Offline::SeedService
+)
+
 cet_build_plugin(LeadingLog art::module
     REG_SOURCE src/LeadingLog_module.cc
     LIBRARIES REG
@@ -456,6 +464,15 @@ cet_build_plugin(SingleProcessGenerator art::module
       Offline::GlobalConstantsService
       Offline::MCDataProducts
       Offline::Mu2eUtilities
+      Offline::SeedService
+)
+
+cet_build_plugin(STMLineSourceGun art::module
+    REG_SOURCE src/STMLineSourceGun_module.cc
+    LIBRARIES REG
+      art_root_io::TFileService_service
+      Offline::DataProducts
+      Offline::MCDataProducts
       Offline::SeedService
 )
 
@@ -653,6 +670,7 @@ cet_build_plugin(PhotonGun art::module
     LIBRARIES REG
       Offline::MCDataProducts
       Offline::DataProducts
+      Offline::SeedService
 )
 
 cet_build_plugin(RMCGenerator art::tool
