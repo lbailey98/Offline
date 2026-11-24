@@ -48,6 +48,16 @@ cet_build_plugin(STMMovingWindowDeconvolution art::module
       Offline::STMConditions
 )
 
+cet_build_plugin(STMStitchedMWD art::module
+    REG_SOURCE src/STMStitchedMWD_module.cc
+    LIBRARIES REG
+      art_root_io::TFileService_service
+      Offline::Mu2eUtilities
+      Offline::ProditionsService
+      Offline::RecoDataProducts
+      Offline::STMConditions
+)
+
 cet_build_plugin(STMZeroSuppression art::module
     REG_SOURCE src/STMZeroSuppression_module.cc
     LIBRARIES REG
@@ -88,6 +98,7 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/fcl/makeSTMHits.fcl   ${CURRENT_BINAR
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/fcl/makeSTMHits_testbeam.fcl   ${CURRENT_BINARY_DIR} fcl/makeSTMHits_testbeam.fcl   COPYONLY)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/fcl/mwd.fcl   ${CURRENT_BINARY_DIR} fcl/mwd.fcl   COPYONLY)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/fcl/mwd_testbeam.fcl   ${CURRENT_BINARY_DIR} fcl/mwd_testbeam.fcl   COPYONLY)
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/fcl/mwdStitched.fcl   ${CURRENT_BINARY_DIR} fcl/mwdStitched.fcl   COPYONLY)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/fcl/plotSTMEnergySpectrum.fcl   ${CURRENT_BINARY_DIR} fcl/plotSTMEnergySpectrum.fcl   COPYONLY)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/fcl/plotSTMPHSpectrum.fcl   ${CURRENT_BINARY_DIR} fcl/plotSTMPHSpectrum.fcl   COPYONLY)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/fcl/plotSTMWaveformDigis.fcl   ${CURRENT_BINARY_DIR} fcl/plotSTMWaveformDigis.fcl   COPYONLY)

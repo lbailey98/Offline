@@ -215,6 +215,7 @@ private:
         uint8_t eventMode{0};
         uint64_t adcClock{0};
         uint64_t dtcClock{0};
+        uint16_t rawLength{0}; // full raw window length, filled even if raw is prescaled
     };
 
     struct FragmentCounters {
@@ -514,13 +515,15 @@ void STMDigisFromFragments::produce(Event& event)
                     headerState.eventMode = stm_frag.spillFlag();
                     headerState.adcClock = stm_frag.adcClock();
                     headerState.dtcClock = stm_frag.dtcClock();
+                    headerState.rawLength = stm_frag.rawLength();
 
                     // create stmEventHeader
                     mu2e::STMEventHeader stm_event_header(
                         headerState.eventWindowTag,
                         headerState.eventMode,
                         headerState.adcClock,
-                        headerState.dtcClock);
+                        headerState.dtcClock,
+                        headerState.rawLength);
 
                     if (headerState.rawPrescaled) {
                         if(_verbosityLevel > 2) {
@@ -735,7 +738,8 @@ void STMDigisFromFragments::produce(Event& event)
                         zsEWT,
                         zsMode,
                         zsAdcClock,
-                        zsdtcClock);
+                        zsdtcClock,
+                        headerState.rawLength);
 
                     // Decide Here to skip based on zs prescale information
                     if (zsPrescaled) {
@@ -1004,7 +1008,8 @@ void STMDigisFromFragments::produce(Event& event)
                         phEWT,
                         phMode,
                         phAdcClock,
-                        phdtcClock);
+                        phdtcClock,
+                        headerState.rawLength);
 
                     // Check if PH fragment is empty
                     auto payloadPtr = stm_frag.payloadBegin();

@@ -1,0 +1,69 @@
+#
+# Run the stitched (streaming) moving window deconvolution on STM digis from
+# DAQ/test/inspectSTMFile.fcl (module label makeSTMDigis).
+# Set mode to "raw" and the tag instance to rawHPGe/rawLaBr to run on raw waveforms.
+#
+# Usage: mu2e -c Offline/STMReco/fcl/mwdStitched.fcl -s dig.stm.art
+#
+
+#include "Offline/fcl/standardServices.fcl"
+#include "Offline/STMReco/fcl/prolog.fcl"
+
+process_name: STMPHStitched
+
+source : {
+  module_type : RootInput
+}
+
+services : {
+  @table::Services.Core
+  TFileService : { fileName : "mwdStitched.root" }
+}
+
+physics: {
+  producers : {
+    mwdHPGe : {
+      module_type : STMStitchedMWD
+      stmWaveformDigisMapTag : "makeSTMDigis:zsHPGe"
+      mode : "zs"
+      tau : @local::STM.HPGe.tau
+      M : @local::STM.HPGe.M
+      L : @local::STM.HPGe.L
+      nsigma_cut : @local::STM.HPGe.nsigma_cut
+      # Fixed baseline of the averaged MWD signal; placeholder until baseline handling is added
+      baselineMean : 0
+      baselineSD : 10
+      makeTTreeEnergies : true
+      verbosityLevel : 0
+    }
+
+    mwdLaBr : {
+      module_type : STMStitchedMWD
+      stmWaveformDigisMapTag : "makeSTMDigis:zsLaBr"
+      mode : "zs"
+      tau : @local::STM.LaBr.tau
+      M : @local::STM.LaBr.M
+      L : @local::STM.LaBr.L
+      nsigma_cut : @local::STM.LaBr.nsigma_cut
+      # Fixed baseline of the averaged MWD signal; placeholder until baseline handling is added
+      baselineMean : 0
+      baselineSD : 10
+      makeTTreeEnergies : true
+      verbosityLevel : 0
+    }
+  }
+
+  HPGePath : [ mwdHPGe ]
+  LaBrPath : [ mwdLaBr ]
+  trigger_paths : [ HPGePath, LaBrPath ]
+  outPath : [ STMOutput ]
+  end_paths : [ outPath ]
+}
+
+outputs : {
+  STMOutput : {
+    module_type : RootOutput
+    outputCommands : [ "keep *_*_*_*" ]
+    fileName : "dig.owner.STMPHStitched.version.sequencer.art"
+  }
+}

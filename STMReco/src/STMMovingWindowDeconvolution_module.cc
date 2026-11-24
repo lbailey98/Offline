@@ -89,8 +89,10 @@ namespace mu2e {
     art::ProductToken<STMWaveformDigiCollectionMap> _stmWaveformDigisMapToken; // token of required data
     STMChannel channel;                                                   // interface to prodicitions service
     double tau = 0.0;                                                     // decay time of waveform [ns] (used in deconvolution step)
-    double M = 0.0;                                                       // M-parameter (used in differentiation step)
-    double L = 0.0;                                                       // L-parameter (used in averaging step)
+    double M_cfg = 0.0;                                                   // configured M-parameter
+    double L_cfg = 0.0;                                                   // configured L-parameter
+    double M = 0.0;                                                       // M-parameter for the current waveform (used in differentiation step)
+    double L = 0.0;                                                       // L-parameter for the current waveform (used in averaging step)
     double nsigma_cut = 0.0;                                              // number of sigma away from baseline mean to cut (used in find_peaks)
     double thresholdgrad = 0.0;                                           // threshold on gradient
     double defaultBaselineMean = 0.0;
@@ -131,7 +133,8 @@ namespace mu2e {
     const int16_t ADCMax = static_cast<int16_t>((-1 * std::pow(2, 15)) + 1);  // Maximum ADC value, power is 15 not 16 as using int16_t not uint16_t
 
     // TTree variables
-    TTree* ttree;
+    TTree* ttreePH = nullptr;
+    TTree* ttreeEnergies = nullptr;
     double TTreeEnergyCalib = 0.0;
     int16_t ADC = 0;
     double E = 0;
@@ -148,6 +151,8 @@ namespace mu2e {
     _stmWaveformDigisMapToken(consumes<STMWaveformDigiCollectionMap>(conf().stmWaveformDigisMapTag())),
     channel(STMUtils::getChannel(conf().stmWaveformDigisMapTag())),
     tau(conf().tau()),
+    M_cfg(conf().M()),
+    L_cfg(conf().L()),
     M(conf().M()),
     L(conf().L()),
     nsigma_cut(conf().nsigma_cut()),
@@ -164,22 +169,23 @@ namespace mu2e {
       TTreeEnergyCalib = conf().TTreeEnergyCalib() ? *(conf().TTreeEnergyCalib()) : 1.0;
       if (makeTTreePH) {
         art::ServiceHandle<art::TFileService> tfs;
-        ttree = tfs->make<TTree>("ttree", "STMMovingWindowDeconvolution pulse finding ttree");
-        ttree->Branch("ADC", &ADC, "ADC/S");
-        ttree->Branch("deconvoluted", &deconvoluted, "deconvoluted/D");
-        ttree->Branch("differentiated", &differentiated, "differentiated/D");
-        ttree->Branch("averaged", &averaged, "averaged/D");
-        ttree->Branch("eventId", &eventId, "eventId/i");
-        ttree->Branch("time", &time, "time/i");
-        ttree->Branch("waveformID", &waveformID, "waveformID/i");
+        ttreePH = tfs->make<TTree>("ttree", "STMMovingWindowDeconvolution pulse finding ttree");
+        ttreePH->Branch("ADC", &ADC, "ADC/S");
+        ttreePH->Branch("deconvoluted", &deconvoluted, "deconvoluted/D");
+        ttreePH->Branch("differentiated", &differentiated, "differentiated/D");
+        ttreePH->Branch("averaged", &averaged, "averaged/D");
+        ttreePH->Branch("eventId", &eventId, "eventId/i");
+        ttreePH->Branch("time", &time, "time/i");
+        ttreePH->Branch("waveformID", &waveformID, "waveformID/i");
       };
       if (makeTTreeEnergies) {
         art::ServiceHandle<art::TFileService> tfs;
-        ttree = tfs->make<TTree>("ttree", "STMMovingWindowDeconvolution pulse height ttree");
-        ttree->Branch("time", &time, "time/i");
-        ttree->Branch("eventId", &eventId, "eventId/i");
-        ttree->Branch("E", &E, "E/D");
-        ttree->Branch("waveformID", &waveformID, "waveformID/i");
+        // keep the name "ttree" when it is the only tree, for existing downstream scripts
+        ttreeEnergies = tfs->make<TTree>(makeTTreePH ? "ttreeEnergies" : "ttree", "STMMovingWindowDeconvolution pulse height ttree");
+        ttreeEnergies->Branch("time", &time, "time/i");
+        ttreeEnergies->Branch("eventId", &eventId, "eventId/i");
+        ttreeEnergies->Branch("E", &E, "E/D");
+        ttreeEnergies->Branch("waveformID", &waveformID, "waveformID/i");
       };
       if (_xAxis == "") {
         if (verbosityLevel >= 5) {
@@ -244,12 +250,12 @@ namespace mu2e {
             nADCs = ADCs.size();
             processedWaveforms++;
             waveformID++;
+            if (nADCs == 0)
+                continue;
 
-            if (M > nADCs)
-                M = nADCs;
-            if (L > nADCs)
-                L = nADCs;
-            //if(0 == nADCs)//Maybe should skip when its empty, nADs = ADCs.size, if 0 then its empty
+            // shrink the windows for short waveforms only, without changing the configured values
+            M = std::min(M_cfg, static_cast<double>(nADCs));
+            L = std::min(L_cfg, static_cast<double>(nADCs));
             deconvolve();
             differentiate();
             average();
@@ -262,7 +268,8 @@ namespace mu2e {
             std::cout << "MWD: found " << nPeaks << " peaks in event " << event.id() << std::endl;
             for (i = 0; i < nPeaks; ++i) {
                 ph_energy = (peak_heights[i] < ADCMax) ? ADCMax : static_cast<int16_t>(peak_heights[i]); // When saturating the int16_t limit, deconvolution goes below the int16_t limit so the energy turns negative. This clips the energy and the limit
-                STMPHDigi ph_digi(peak_times[i], -1 * ph_energy); // peak_heights are negative, make them positive here
+                // peak_times are indices within this waveform; add the waveform's offset (ZS index) so the time is the index within the EWT
+                STMPHDigi ph_digi(waveform.trigTimeOffset() + static_cast<uint32_t>(peak_times[i]), -1 * ph_energy); // peak_heights are negative, make them positive here
                 if (ph_digi.energy() < -100)
                 throw cet::exception("logicError", "The peak height must be positive!");
 
@@ -272,7 +279,7 @@ namespace mu2e {
                 if (makeTTreeEnergies) {
                     time = ph_digi.time();
                     E = ph_digi.energy() * TTreeEnergyCalib;
-                    ttree->Fill();
+                    ttreeEnergies->Fill();
                 };
                 if (verbosityLevel > 3)
                 std::cout << "energy: " << ph_digi.energy() << std::endl;
@@ -286,7 +293,7 @@ namespace mu2e {
                     deconvoluted =  deconvolved_data[i];
                     differentiated = differentiated_data[i];
                     averaged = averaged_data[i];
-                    ttree->Fill();
+                    ttreePH->Fill();
                     time++;
                 };
             };
@@ -364,7 +371,7 @@ namespace mu2e {
     using namespace boost::accumulators;
     accumulator_set<double, stats<tag::mean, tag::variance> > acc_data_without_peaks;
     // Remove peaks so that we can calculate the baseline of the averaged data
-    while (i < nADCs){
+    while (i + 1 < nADCs){ // gradient looks one sample ahead
       gradient = averaged_data[i + 1] - averaged_data[i];
       if(gradient < thresholdgrad) // if the gradient is too sharp (i.e. we have hit a peak)
         i += (M + 2 * L); // jump ahead a little bit

@@ -40,8 +40,8 @@ physics: {
       L : @local::STM.LaBr.L
       nsigma_cut : @local::STM.LaBr.nsigma_cut
       thresholdgrad : @local::STM.LaBr.thresholdgrad
-      defaultBaselineMean: @local::STM.HPGe.defaultBaselineMean
-      defaultBaselineSD: @local::STM.HPGe.defaultBaselineSD
+      defaultBaselineMean: @local::STM.LaBr.defaultBaselineMean
+      defaultBaselineSD: @local::STM.LaBr.defaultBaselineSD
       xAxis: "sample_number"
     }
   }
