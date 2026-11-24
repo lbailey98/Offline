@@ -9,14 +9,18 @@
 //    previous one if that reached the end of its window (STMEventHeader::rawLength) and this
 //    one starts at index 0 of the next EWT. Otherwise the filter is reset and any peak in
 //    progress is dropped:
-//      raw: cold reset; no peaks are searched for until the filters have refilled (M+L
-//           samples), since the preceding signal is unknown (raw prescale gap).
+//      raw: cold reset; no peaks are searched for in the first M samples (as online at the
+//           start of a run), since the preceding signal is unknown (raw prescale gap).
 //      zs : reset to the pedestal state (suppressed samples are below threshold), so peaks
 //           are searched for immediately, as in the per-region algorithm.
-//  - The baseline of the averaged signal is fixed by fcl (baselineMean, baselineSD) for now.
+//  - Filter and peak finding follow the online MWD (Mu2e-STMDAQ processing/mwd.cc): the
+//    baseline (fcl baselineMean, else the STMEnergyCalib pedestal) is subtracted from the
+//    ADCs, the threshold is -nsigma_cut * baselineSigma or fixedCut, peak finding starts
+//    after M samples, and the peak time/EWT/height are those of the minimum.
 //
-// Output: STMPHDigiCollectionMap keyed by the STMEventHeader of the EWT in which the peak
-// crossed threshold; STMPHDigi::time() is the sample index within that EWT. A peak that
+// Output: STMPHDigiCollectionMap keyed by the STMEventHeader of the EWT containing the peak
+// minimum; STMPHDigi::time() is the sample index within that EWT and energy() the rounded
+// (negative) averaged MWD value, the same convention as the online PH digis. A peak that
 // completes in a later art event is emitted in that later event, under the earlier header.
 //
 // Events must be processed in order on a single schedule.
@@ -26,6 +30,7 @@
 
 // stdlib
 #include <algorithm>
+#include <cmath>
 #include <iomanip>
 #include <limits>
 #include <string>
@@ -40,6 +45,7 @@
 #include "canvas/Utilities/InputTag.h"
 #include "cetlib_except/exception.h"
 #include "fhiclcpp/types/Atom.h"
+#include "fhiclcpp/types/OptionalAtom.h"
 #include "messagefacility/MessageLogger/MessageLogger.h"
 
 // Offline
@@ -63,18 +69,18 @@ namespace mu2e {
       struct Params {
         unsigned M{0};
         unsigned L{0};
-        double baselineMean{0};
-        double threshold{0};  // baselineMean - nsigma * baselineSD
+        double threshold{0};  // -nsigma * sigma, or a fixed cut
+        double peakInit{0};   // initial peak minimum; a peak must go below this
       };
 
       struct Peak {
         STMEventHeader header;
-        uint32_t index{0};  // sample index within the EWT of the threshold crossing
-        double height{0};   // lowest averaged value minus baseline (negative for a pulse)
+        uint32_t index{0};  // sample index within the EWT of the peak minimum
+        double height{0};   // averaged MWD value at the minimum (negative for a pulse)
       };
 
       explicit MWDStream(Params const& p)
-        : _p(p), _dRing(p.M, 0.0), _diffRing(p.L, 0.0) {}
+        : _p(p), _dRing(p.M, 0.0), _diffRing(p.L, 0.0), _lowest(p.peakInit) {}
 
       void setConditions(double pedestal, double timeFactor) {
         _pedestal = pedestal;
@@ -102,7 +108,7 @@ namespace mu2e {
         _D = 0.0;
         std::fill(_dRing.begin(), _dRing.end(), 0.0);
         std::fill(_diffRing.begin(), _diffRing.end(), 0.0);
-        _n = uint64_t(_p.M) + _p.L;
+        _n = uint64_t(_p.M) + _p.L; // past the warm-up
       }
 
       bool inPeak() const { return _inPeak; }
@@ -131,24 +137,23 @@ namespace mu2e {
         }
         double const avg = _sumL / _p.L;
 
+        uint64_t const sampleIndex = _n; // samples since reset, before this one
         ++_k;
         ++_n;
         double const prevAvg = _prevAvg;
         _prevAvg = avg;
-        if (_n < uint64_t(_p.M) + _p.L) return; // filters not yet valid
+        if (sampleIndex < _p.M) return; // warm-up, as online (pf_index >= M)
 
-        // peak finding (same logic as STMMovingWindowDeconvolution::find_peaks)
-        if (avg < _p.threshold) {
-          if (avg < prevAvg && avg < _lowest) {
-            _lowest = avg;
-            if (!_inPeak) {
-              _inPeak = true;
-              _peakHeader = header;
-              _peakIndex = index;
-            }
-          }
-        } else if (_inPeak) {
-          peaks.push_back(Peak{_peakHeader, _peakIndex, _lowest - _p.baselineMean});
+        // peak finding, as online MWD::find_peaks: follow the minimum below threshold and
+        // record its value, time and EWT; finalise when the signal rises back above threshold
+        if (avg < _p.threshold && avg < prevAvg && avg < _lowest) {
+          _lowest = avg;
+          _inPeak = true;
+          _peakHeader = header;
+          _peakIndex = index;
+        }
+        if (_inPeak && avg > _p.threshold) {
+          peaks.push_back(Peak{_peakHeader, _peakIndex, _lowest});
           clearPeak();
         }
       }
@@ -156,7 +161,7 @@ namespace mu2e {
     private:
       void clearPeak() {
         _inPeak = false;
-        _lowest = 0.0;
+        _lowest = _p.peakInit;
       }
 
       Params _p;
@@ -193,9 +198,11 @@ namespace mu2e {
       fhicl::Atom<double> tau{Name("tau"), Comment("Decay constant of the waveform [ns]")};
       fhicl::Atom<double> M{Name("M"), Comment("Differentiation window [samples]")};
       fhicl::Atom<double> L{Name("L"), Comment("Averaging window [samples]")};
-      fhicl::Atom<double> nsigma_cut{Name("nsigma_cut"), Comment("Number of baseline sigma below baseline mean for a peak")};
-      fhicl::Atom<double> baselineMean{Name("baselineMean"), Comment("Baseline mean of the averaged MWD signal [ADC] (fixed for now)")};
-      fhicl::Atom<double> baselineSD{Name("baselineSD"), Comment("Baseline stddev of the averaged MWD signal [ADC] (fixed for now)")};
+      fhicl::OptionalAtom<double> baselineMean{Name("baselineMean"), Comment("Baseline subtracted from the ADCs before deconvolution [ADC] (online manual_mean). If absent, the STMEnergyCalib pedestal is used")};
+      fhicl::OptionalAtom<double> fixedCut{Name("fixedCut"), Comment("Fixed peak threshold on the averaged MWD signal [ADC] (online fixed_cut_value). If absent, -nsigma_cut * baselineSigma is used")};
+      fhicl::OptionalAtom<double> nsigma_cut{Name("nsigma_cut"), Comment("Threshold in units of baselineSigma (online nsigma_cut)")};
+      fhicl::OptionalAtom<double> baselineSigma{Name("baselineSigma"), Comment("Baseline sigma [ADC] (online manual_sigma)")};
+      fhicl::Atom<double> peakMinInit{Name("peakMinInit"), Comment("Initial peak minimum; a peak must go below this (online peak_min_init)"), 0.0};
       fhicl::Atom<bool> makeTTreeEnergies{Name("makeTTreeEnergies"), Comment("Write a TTree of found peaks"), false};
       fhicl::Atom<double> TTreeEnergyCalib{Name("TTreeEnergyCalib"), Comment("Multiplier applied to energies in the TTree"), 1.0};
       fhicl::Atom<int> verbosityLevel{Name("verbosityLevel"), Comment("Verbosity level"), 0};
@@ -204,6 +211,8 @@ namespace mu2e {
     explicit STMStitchedMWD(Parameters const& conf);
 
   private:
+    static double threshold(Config const& c);
+
     void produce(art::Event& event) override;
     void endJob() override;
 
@@ -211,6 +220,8 @@ namespace mu2e {
     STMChannel _channel;
     bool _zsMode{false};
     double _tau{0};
+    bool _haveManualBaseline{false};
+    double _manualBaseline{0};
     unsigned _M{0};
     unsigned _L{0};
     int _verbosity{0};
@@ -249,8 +260,11 @@ namespace mu2e {
       _makeTTree(conf().makeTTreeEnergies()),
       _ttreeCalib(conf().TTreeEnergyCalib()),
       _mwd(MWDStream::Params{static_cast<unsigned>(conf().M()), static_cast<unsigned>(conf().L()),
-                             conf().baselineMean(),
-                             conf().baselineMean() - conf().nsigma_cut() * conf().baselineSD()}) {
+                             threshold(conf()), conf().peakMinInit()}) {
+    if (auto mean = conf().baselineMean()) {
+      _haveManualBaseline = true;
+      _manualBaseline = *mean;
+    }
     std::string const mode = conf().mode();
     if (mode == "zs") _zsMode = true;
     else if (mode != "raw")
@@ -273,13 +287,22 @@ namespace mu2e {
     }
   }
 
+  double STMStitchedMWD::threshold(Config const& c) {
+    if (auto cut = c.fixedCut()) return *cut;
+    auto nsigma = c.nsigma_cut();
+    auto sigma = c.baselineSigma();
+    if (nsigma && sigma) return -(*nsigma) * (*sigma);
+    throw cet::exception("Configuration") << "STMStitchedMWD: set either fixedCut, or both nsigma_cut and baselineSigma\n";
+  }
+
   void STMStitchedMWD::produce(art::Event& event) {
     ++_nEvents;
     auto output = std::make_unique<STMPHDigiCollectionMap>();
     auto const& digisMap = *event.getValidHandle(_digisToken);
 
     STMEnergyCalib const& calib = _stmEnergyCalib_h.get(event.id());
-    _mwd.setConditions(calib.pedestal(_channel), 1.0 - calib.nsPerCt(_channel) / _tau);
+    double const baseline = _haveManualBaseline ? _manualBaseline : calib.pedestal(_channel);
+    _mwd.setConditions(baseline, 1.0 - calib.nsPerCt(_channel) / _tau); // tau_norm = 1 - tADC/tau
 
     std::vector<MWDStream::Peak> peaks;
     for (auto const& [header, digis] : digisMap) { // ordered by EWT
@@ -323,9 +346,11 @@ namespace mu2e {
 
     // Convert peaks to STMPHDigis
     for (auto const& peak : peaks) {
-      // Clip at int16 range; deconvolution of saturated pulses can overflow.
-      double const h = std::max(peak.height, static_cast<double>(std::numeric_limits<int16_t>::min() + 1));
-      int16_t const energy = static_cast<int16_t>(-h);
+      // Same convention as the online PH: rounded, signed (negative) averaged MWD value.
+      // Clip at the int16 range, since deconvolution of saturated pulses can overflow.
+      double const h = std::clamp(peak.height, double(std::numeric_limits<int16_t>::min()),
+                                  double(std::numeric_limits<int16_t>::max()));
+      int16_t const energy = static_cast<int16_t>(std::lround(h));
       (*output)[peak.header].emplace_back(peak.index, energy);
       ++_nPeaks;
       bool const crossEvent = digisMap.find(peak.header) == digisMap.end();
